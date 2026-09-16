@@ -1,0 +1,283 @@
+Lab 3: Exploring Linux File Systems and Virtual File Systems
+
+Course: Operating Systems Lab
+
+Author: [Your Name / Student ID]
+
+Date: September 16, 2026
+
+Repository Path: Lab3/Report.md
+
+1. Introduction
+
+The Linux operating system organizes all files, hardware devices, kernel data structures, and running processes into a single unified hierarchical tree starting at the root directory (/). Unlike traditional disk-backed filesystems (e.g., ext4, xfs), Linux makes heavy use of Virtual File Systems (VFS) and pseudo-filesystems (e.g., procfs, sysfs, devtmpfs, tmpfs). These filesystems exist entirely in volatile system memory (RAM) or serve as kernel abstractions rather than physical blocks on permanent storage media.
+
+Objectives
+
+Inspect and understand standard top-level system directories (/bin, /dev, /proc, /home, /usr).
+
+Analyze active mount points and distinguish physical block storage mounts from kernel-managed virtual filesystems.
+
+Investigate the /media mount point for removable block devices.
+
+Evaluate storage allocation, filesystem types, and partition metadata using df.
+
+Execute the full lifecycle of a temporary RAM-backed filesystem under /mnt (mount, allocate, verify, unmount).
+
+Explore /proc to observe dynamic kernel-generated hardware and process state representations (cpuinfo, meminfo).
+
+2. Methodology, Commands & Observations
+
+Exercise 1: Exploration of Core System Directories
+
+The directories /bin, /dev, /proc, /home, and /usr were inspected using the ls command with metadata inspection flags.
+
+# View metadata and symlink bindings
+ls -ld /bin /dev /proc /home /usr
+
+# Sample directory entries
+ls /bin | head -n 10
+ls /dev | head -n 10
+ls /proc | head -n 10
+ls /home
+ls /usr
+
+
+Observations:
+
+/bin (User Binaries): Contains standard user commands (cat, cp, ls, bash). On modern systemd-based distributions, /bin is a symbolic link (-> usr/bin), consolidating binaries under /usr.
+
+/dev (Device Nodes): Populated by device nodes (character devices indicated by c and block devices by b, such as sda, nvme0n1, tty, urandom). These do not occupy disk space; they act as interface handles to kernel drivers.
+
+/proc (Process Information Pseudo-Filesystem): Contains numbered directories corresponding to active Process IDs (PIDs) alongside system diagnostic endpoints (cpuinfo, meminfo, version). All files report a size of 0 bytes because they are generated dynamically upon access.
+
+/home (User Directories): Contains personal home directories for system users, isolating user configurations, shell dotfiles (.bashrc), and documents from root-level system dependencies.
+
+/usr (Unix System Resources): Holds the secondary hierarchy for read-only user data, documentation, shared libraries (/usr/lib), and general system utilities (/usr/bin).
+
+[INSERT SCREENSHOT: output/01_bin_dev_proc_usr.png]
+Caption: Inspection of /bin, /dev, /proc, /home, and /usr showing directory attributes and sample listings.
+
+
+Exercise 2: Active Filesystems & Virtual Mount Counts
+
+To determine the volume of mounted filesystems and isolate virtual subsystems, the findmnt tool was queried:
+
+# Total count of all active mount points
+findmnt | wc -l
+
+# Flat list displaying target paths, filesystem types, and underlying sources
+findmnt -l -o TARGET,FSTYPE,SOURCE
+
+
+Observations:
+
+The total count of mounted points typically ranges between 25 and 50+, depending on active container runtimes, snap packages, and kernel control groups.
+
+The vast majority of mount points are virtual filesystems rather than physical partitions. Common types observed:
+
+sysfs (/sys): Exports kernel objects, device attributes, and driver configurations.
+
+proc (/proc): Exposes process lists and runtime kernel variables.
+
+devtmpfs (/dev): Kernel-managed node tree for physical/virtual devices.
+
+tmpfs (/run, /dev/shm): Memory-backed RAM storage used for transient runtime IPC and PID locks.
+
+cgroup2 (/sys/fs/cgroup): Unified control group hierarchy managing process resource distribution (CPU, memory, I/O limits).
+
+[INSERT SCREENSHOT: output/02_findmnt_count.png]
+Caption: Count of active mount points and formatted mount table showing filesystem types.
+
+
+Exercise 3: Removable Media Mounts (/media)
+
+The /media directory is intended for auto-mounting removable media (USB drives, external SSDs, SD cards). To observe this functionality without requiring a physical flash drive, a loopback block device was configured to emulate removable media:
+
+# Inspect base /media directory
+ls -la /media
+
+# 1. Generate a raw 50MB disk image filled with zeroes
+dd if=/dev/zero of=/tmp/usb_sim.img bs=1M count=50
+
+# 2. Format the disk image with the standard FAT32 (vfat) filesystem
+mkfs.vfat /tmp/usb_sim.img
+
+# 3. Create a target directory under /media and mount the loop image
+sudo mkdir -p /media/$USER/SimulatedUSB
+sudo mount -o loop /tmp/usb_sim.img /media/$USER/SimulatedUSB
+
+# 4. Verify the block device mapping
+lsblk
+ls -la /media/$USER/SimulatedUSB
+
+
+Observations:
+
+lsblk displays the image mapped via a virtual loop device (e.g., /dev/loopX) mounted cleanly under /media/<username>/SimulatedUSB.
+
+Removable media filesystems mounted here are isolated per-user under /media/$USER/ to prevent unauthorized cross-session access.
+
+[INSERT SCREENSHOT: output/03_media_device.png]
+Caption: Block device listing via lsblk and mount verification inside /media.
+
+
+Exercise 4: Disk Space Allocation Analysis (df)
+
+The df (Disk Free) utility was executed to inspect disk usage across all mounted filesystems:
+
+# Display filesystem type and human-readable capacity
+df -Th
+
+
+Key Output Fields Analyzed:
+
+Filesystem: Source block device (e.g., /dev/sda1, /dev/nvme0n1p2, or tmpfs).
+
+Type (-T): Distinguishes physical filesystems (ext4, btrfs, xfs) from pseudo-filesystems (tmpfs, devtmpfs).
+
+Size, Used, Avail (-h): Scaled to human-readable powers of 1024 ($2^{10}\text{ bytes} = 1\text{ KiB}$, $2^{20}\text{ bytes} = 1\text{ MiB}$, $2^{30}\text{ bytes} = 1\text{ GiB}$).
+
+Use%: Proportion of consumed inodes/blocks.
+
+Mounted on: Target directory attached to that filesystem.
+
+[INSERT SCREENSHOT: output/04_df_human_readable.png]
+Caption: df -Th output detailing mounted physical partitions and volatile memory mounts.
+
+
+Exercise 5: Temporary Filesystem Lifecycle Under /mnt
+
+The /mnt mount point is reserved for system administrators to manually mount temporary filesystems. A volatile RAM-backed filesystem (tmpfs) was mounted, modified, inspected, and unmounted.
+
+# Step 1: Mount a 100MB tmpfs instance at /mnt
+sudo mount -t tmpfs -o size=100M tmpfs /mnt
+
+# Step 2: Check initial storage state on /mnt
+df -h /mnt
+
+# Step 3: Write a 25MB allocation file to consume space
+sudo dd if=/dev/zero of=/mnt/test_allocation.dat bs=1M count=25 status=progress
+
+# Step 4: Verify that available space has decreased by 25MB
+df -h /mnt
+
+# Step 5: Verify the temporary filesystem appears in global system mounts
+df -Th | grep /mnt
+
+# Step 6: Detach and unmount the filesystem
+sudo umount /mnt
+
+# Step 7: Confirm that /mnt is cleanly unmounted
+df -Th | grep /mnt
+
+
+Observations & Results:
+
+State
+
+Total Size
+
+Used Space
+
+Available Space
+
+Use %
+
+Post-Mount
+
+100M
+
+0
+
+100M
+
+0%
+
+Post-Allocation (25MB written)
+
+100M
+
+25M
+
+75M
+
+25%
+
+Post-Umount
+
+Unmounted (Reverted to root filesystem storage pool)
+
+-
+
+-
+
+-
+
+Because tmpfs is volatile, unmounting drops all associated RAM pages; any data inside /mnt/test_allocation.dat was immediately discarded from memory upon executing umount.
+
+[INSERT SCREENSHOT: output/05_mnt_mount_lifecycle.png]
+Caption: Verification of /mnt storage before and after writing test_allocation.dat, followed by umount verification.
+
+
+Exercise 6: Diagnostic Exploration of /proc
+
+The /proc virtual interface was probed for hardware and memory runtime statistics:
+
+# Filter directory nodes containing 'cpu' or 'mem'
+ls -l /proc | grep -E "cpu|mem"
+
+# Query CPU processor architecture, model name, and core distribution
+grep -E "model name|cpu cores|cpu MHz" /proc/cpuinfo | head -n 6
+
+# Query system-wide physical memory, buffer, and caching allocations
+head -n 15 /proc/meminfo
+
+
+Key Diagnostic Findings:
+
+CPU Metrics (/proc/cpuinfo):
+
+Model Name: Identifies the microarchitecture and processor vendor string.
+
+CPU Cores: Indicates physical vs. logical multithreading core limits.
+
+CPU MHz: Real-time clock frequency scaling reported by the kernel governor.
+
+Memory Metrics (/proc/meminfo):
+
+MemTotal: Total usable RAM (physical RAM minus kernel binary code reservations).
+
+MemFree: Completely unused physical memory pages.
+
+MemAvailable: Real-world usable memory estimating what can be allocated without forcing swap out (includes reclaimable cache and buffers).
+
+[INSERT SCREENSHOT: output/06_proc_cpu_mem.png]
+Caption: Querying /proc/cpuinfo and /proc/meminfo for hardware diagnostic data.
+
+
+3. Viva Voce Preparation & Q&A Summary
+
+Q1: What is the primary difference between /mnt and /media?
+
+Answer: /media is designed for automated mounting of user removable storage (USB flash drives, CD-ROMs), often handled by desktop daemons (udisks2). /mnt is designated for system administrators to manually attach temporary filesystems.
+
+Q2: Why do files in /proc show a size of 0 bytes when running ls -l /proc?
+
+Answer: /proc is a virtual pseudo-filesystem (procfs). Its files do not exist as physical blocks on disk. When a user requests to read a file like /proc/meminfo, the kernel intercepts the VFS system call and generates the text dynamically in memory.
+
+Q3: What distinguishes MemFree from MemAvailable in /proc/meminfo?
+
+Answer: MemFree is the raw quantity of physical RAM currently doing nothing. MemAvailable represents the amount of RAM actually available for new applications without swapping, taking into account page cache and slab memory that can be reclaimed instantly.
+
+Q4: What is tmpfs and where is it stored?
+
+Answer: tmpfs is a temporary filesystem that stores data in volatile virtual memory (RAM/swap). Reading and writing to it requires no disk I/O, but all contents are lost when unmounted or when the system restarts.
+
+Q5: What causes a umount: target is busy error?
+
+Answer: This occurs when a process is accessing the mount point (e.g., an open file handle, or a shell whose current working directory pwd is at or inside the mount point).
+
+4. Conclusion
+
+This lab demonstrated how the Linux kernel abstracts storage, process tracking, and device communication behind a single hierarchical Virtual File System (VFS). Through commands like findmnt, df, and direct examination of /proc, we verified that modern Linux systems manage dozens of in-memory filesystems concurrently to facilitate process communication, hardware diagnostics, and secure ephemeral storage.
